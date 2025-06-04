@@ -266,8 +266,8 @@ func checkForPDNPatterns(input string) []string {
 	valuePatterns := map[string]*regexp.Regexp{
 		"Email":           regexp.MustCompile(`[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}`),
 		"Телефон":         regexp.MustCompile(`(\+7|8)[\s\-\(]?\d{3}[\)\s\-]?\d{3}[\s\-]?\d{2}[\s\-]?\d{2}`),
-		"Паспорт РФ":      regexp.MustCompile(`(паспорт|серия|номер)[\s:]*\d{4}\s?\d{6}`),
-		"СНИЛС":           regexp.MustCompile(`\d{3}-\d{3}-\d{3}\s?\d{2}`),
+		"Паспорт РФ":      regexp.MustCompile(`\b(\d{2}\s?\d{2}\s?\d{6}|\d{10})\b|(?:паспорт|серия|номер)[^\d]*(\d{4})[^\d]*(\d{6})`),
+		"СНИЛС":           regexp.MustCompile(`\b\d{3}[-]?\d{3}[-]?\d{3}[-\s]?\d{2}\b`),
 		"ИНН физлица":     regexp.MustCompile(`\b\d{12}\b`),
 		"Кредитная карта": regexp.MustCompile(`\d{4}[\s\-]?\d{4}[\s\-]?\d{4}[\s\-]?\d{4}`),
 	}
@@ -282,6 +282,7 @@ func checkForPDNPatterns(input string) []string {
 		"Паспорт":             {"паспорт", "passport", "серия", "series", "номер", "number"},
 		"СНИЛС/ИНН":           {"снилс", "snils", "инн", "taxid", "tax id"},
 		"Дата рождения":       {"рожд", "birth", "dateofbirth", "birthdate", "датарожд", "дата рожд"},
+		"Таб. номер":          {"таб", "табель"},
 	}
 
 	// Проверка значений
