@@ -72,7 +72,7 @@ func main() {
 	fmt.Println("Успешное подключение к БД")
 
 	// Получаем список таблиц и представлений
-	tables, err := getTablesAndViews(db, database)
+	tables, err := getTablesAndViews(db)
 	if err != nil {
 		log.Fatal("Ошибка получения таблиц:", err)
 	}
@@ -81,7 +81,7 @@ func main() {
 
 	// Анализ каждой таблицы
 	for _, table := range tables {
-		columns, err := getColumns(db, database, table.SchemaName, table.TableName)
+		columns, err := getColumns(db, table.SchemaName, table.TableName)
 		if err != nil {
 			log.Printf("Ошибка получения колонок для %s.%s: %v", table.SchemaName, table.TableName, err)
 			continue
@@ -137,7 +137,7 @@ func main() {
 }
 
 // Получение списка таблиц и представлений
-func getTablesAndViews(db *sql.DB, dbName string) ([]TableInfo, error) {
+func getTablesAndViews(db *sql.DB) ([]TableInfo, error) {
 	query := `
 		SELECT s.name AS schema_name, t.name AS table_name, t.type_desc AS table_type
 		FROM sys.tables t
@@ -168,7 +168,7 @@ func getTablesAndViews(db *sql.DB, dbName string) ([]TableInfo, error) {
 }
 
 // Получение столбцов таблицы
-func getColumns(db *sql.DB, dbName, schemaName, tableName string) ([]ColumnInfo, error) {
+func getColumns(db *sql.DB, schemaName, tableName string) ([]ColumnInfo, error) {
 	query := `
 		SELECT c.name AS column_name, tp.name AS data_type
 		FROM sys.columns c
