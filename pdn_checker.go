@@ -295,11 +295,11 @@ func analyzeColumn(db *sql.DB, database string, table TableInfo, column ColumnIn
 }
 
 func getSampleValues(db *sql.DB, schemaName, tableName, columnName string) ([]ValuePattern, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 
 	query := fmt.Sprintf(`
-		SELECT TOP 20 CAST([%s] AS NVARCHAR(MAX)) AS sample_value
+		SELECT TOP 10 CAST([%s] AS NVARCHAR(MAX)) AS sample_value
 		FROM [%s].[%s] WITH (NOLOCK)
 		WHERE [%s] IS NOT NULL AND [%s] != ''
 	`, columnName, schemaName, tableName, columnName, columnName)
@@ -375,7 +375,7 @@ func checkForPDNPatterns(input string) []string {
 		"Адрес":               {"адрес", "address", "addr", "location", "место"},
 		"Email":               {"эп", "mail", "адресэп", "адрес эп", "email"},
 		"Телефон":             {"телефон", "phone", "tel", "мобильн", "mobile", "contact"},
-		"Паспорт":             {"паспорт", "passport", "серия", "series"},
+		"Паспорт":             {"паспор", "passpor", "серия", "series"},
 		"СНИЛС/ИНН":           {"снилс", "snils", "инн", "taxid", "tax id"},
 		"Дата рождения":       {"рожд", "birth", "dateofbirth", "birthdate", "датарожд", "дата рожд"},
 		"Таб. номер":          {"таб", "табель"},
