@@ -371,7 +371,7 @@ func checkForPDNPatterns(input string) []string {
 	// Паттерны заголовков
 	headerPatterns := map[string][]string{
 		"ФИО":                 {"фамил", "fami", "surn", "lastname", "last name", "имя", "firstname", "first name", "отчест", "middlename", "middle name", "patronym", "фам", "fio", "фио", "fullname", "full name"},
-		"Персональные данные": {"сотруд", "руковод", "manag", "физи", "персон", "person", "empl"},
+		"Персональные данные": {"сотруд", "руковод", "manag", "физи", "физл", "персон", "person", "empl"},
 		"Адрес":               {"адрес", "address", "addr", "location", "место"},
 		"Email":               {"эп", "mail", "адресэп", "адрес эп", "email"},
 		"Телефон":             {"телефон", "phone", "tel", "мобильн", "mobile", "contact"},
