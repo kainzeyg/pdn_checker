@@ -109,7 +109,7 @@ func connectToDB(server, port, database, username, password string) *sql.DB {
 	db.SetMaxIdleConns(2)
 
 	// Проверка подключения с таймаутом
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	if err := db.PingContext(ctx); err != nil {
 		log.Fatal("Ошибка проверки подключения:", err)
@@ -162,7 +162,7 @@ func analyzeTablesWithBatches(db *sql.DB, database string, tables []TableInfo, r
 			i+1, totalTables, table.SchemaName, table.TableName, table.TableType)
 
 		// Создаем контекст с таймаутом для всей таблицы
-		tableCtx, tableCancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		tableCtx, tableCancel := context.WithTimeout(context.Background(), 3*time.Minute)
 
 		columns, err := getColumns(tableCtx, db, table.SchemaName, table.TableName)
 		if err != nil {
