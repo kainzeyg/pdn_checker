@@ -3,8 +3,10 @@ package main
 import (
 	"context"
 	"database/sql"
+	"encoding/csv"
 	"fmt"
 	"log"
+	"os"
 	"regexp"
 	"strings"
 	"time"
@@ -55,8 +57,12 @@ func main() {
 	// Анализ таблиц
 	results := analyzeTables(db, database, tables)
 
-	// Вывод результатов
-	printResults(results)
+	// Вывод результатов в CSV
+	err := saveResultsToCSV(server, results)
+	if err != nil {
+		log.Fatal("Ошибка сохранения в CSV:", err)
+	}
+	fmt.Println("\nОтчет успешно сохранен в report.csv")
 }
 
 func getConnectionParams() (string, string, string, string, string) {
@@ -155,6 +161,38 @@ func analyzeTables(db *sql.DB, database string, tables []TableInfo) []PDNResult 
 		for _, column := range columns {
 			columnResults := analyzeColumn(db, database, table, column)
 			results = append(results, columnResults...)
+		}
+	}
+
+	// Добавляем записи для колонок без ПДн
+	for _, table := range tables {
+		columns, err := getColumns(db, table.SchemaName, table.TableName)
+		if err != nil {
+			continue
+		}
+
+		for _, column := range columns {
+			hasPDN := false
+			for _, res := range results {
+				if res.SchemaName == table.SchemaName && res.TableName == table.TableName && res.ColumnName == column.ColumnName {
+					hasPDN = true
+					break
+				}
+			}
+
+			if !hasPDN {
+				results = append(results, PDNResult{
+					DatabaseName: database,
+					SchemaName:   table.SchemaName,
+					TableName:    table.TableName,
+					TableType:    table.TableType,
+					ColumnName:   column.ColumnName,
+					FoundIn:      "none",
+					SampleValue:  "",
+					Pattern:      "",
+					PDNType:      "Нет",
+				})
+			}
 		}
 	}
 
@@ -333,7 +371,7 @@ func checkForPDNPatterns(input string) []string {
 	// Паттерны заголовков
 	headerPatterns := map[string][]string{
 		"ФИО":                 {"фамил", "fami", "surn", "lastname", "last name", "имя", "name", "firstname", "first name", "отчест", "middlename", "middle name", "patronym", "фам", "fio", "фио", "fullname", "full name"},
-		"Персональные данные": {"сотруд", "руковод", "manag", "физи", "персон", "person"},
+		"Персональные данные": {"сотруд", "руковод", "manag", "физи", "персон", "person", "empl"},
 		"Адрес":               {"адрес", "address", "addr", "location", "место"},
 		"Email":               {"эп", "mail", "адресэп", "адрес эп", "email"},
 		"Телефон":             {"телефон", "phone", "tel", "мобильн", "mobile", "contactno"},
@@ -405,26 +443,57 @@ func contains(slice []string, item string) bool {
 	return false
 }
 
-func printResults(results []PDNResult) {
-	fmt.Println("\nРезультаты поиска ПДн:")
-	fmt.Println("==============================================")
+func saveResultsToCSV(server string, results []PDNResult) error {
+	file, err := os.Create("report.csv")
+	if err != nil {
+		return err
+	}
+	defer file.Close()
 
-	if len(results) == 0 {
-		fmt.Println("ПДн не обнаружено")
-		return
+	writer := csv.NewWriter(file)
+	defer writer.Flush()
+
+	// Записываем заголовок
+	header := []string{
+		"Сервер",
+		"БД",
+		"Схема",
+		"Таблица/Представление",
+		"Тип объекта",
+		"Колонка",
+		"ПДн (Да\\Нет)",
+		"Тип ПДн",
+		"Пример значения",
+		"Пример значения с маскированием",
+	}
+	if err := writer.Write(header); err != nil {
+		return err
 	}
 
+	// Записываем данные
 	for _, res := range results {
-		fmt.Printf("БД: %s\n", res.DatabaseName)
-		fmt.Printf("Схема: %s\n", res.SchemaName)
-		fmt.Printf("Таблица/Представление: %s (%s)\n", res.TableName, res.TableType)
-		fmt.Printf("Столбец: %s\n", res.ColumnName)
-		fmt.Printf("Обнаружено в: %s\n", res.FoundIn)
-		if res.FoundIn == "value" {
-			fmt.Printf("Пример значения: %s\n", res.SampleValue)
-			fmt.Printf("Паттерн значения: %s\n", res.Pattern)
+		hasPDN := "Да"
+		if res.PDNType == "Нет" {
+			hasPDN = "Нет"
 		}
-		fmt.Printf("Тип ПДн: %s\n", res.PDNType)
-		fmt.Println("----------------------------------------------")
+
+		record := []string{
+			server,
+			res.DatabaseName,
+			res.SchemaName,
+			res.TableName,
+			res.TableType,
+			res.ColumnName,
+			hasPDN,
+			res.PDNType,
+			res.SampleValue,
+			maskSensitiveData(res.SampleValue),
+		}
+
+		if err := writer.Write(record); err != nil {
+			return err
+		}
 	}
+
+	return nil
 }
