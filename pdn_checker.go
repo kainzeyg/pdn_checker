@@ -370,11 +370,11 @@ func checkForPDNPatterns(input string) []string {
 
 	// Паттерны заголовков
 	headerPatterns := map[string][]string{
-		"ФИО":                 {"фамил", "fami", "surn", "lastname", "last name", "имя", "name", "firstname", "first name", "отчест", "middlename", "middle name", "patronym", "фам", "fio", "фио", "fullname", "full name"},
+		"ФИО":                 {"фамил", "fami", "surn", "lastname", "last name", "имя", "firstname", "first name", "отчест", "middlename", "middle name", "patronym", "фам", "fio", "фио", "fullname", "full name"},
 		"Персональные данные": {"сотруд", "руковод", "manag", "физи", "персон", "person", "empl"},
 		"Адрес":               {"адрес", "address", "addr", "location", "место"},
 		"Email":               {"эп", "mail", "адресэп", "адрес эп", "email"},
-		"Телефон":             {"телефон", "phone", "tel", "мобильн", "mobile", "contactno"},
+		"Телефон":             {"телефон", "phone", "tel", "мобильн", "mobile", "contact"},
 		"Паспорт":             {"паспорт", "passport", "серия", "series", "номер", "number"},
 		"СНИЛС/ИНН":           {"снилс", "snils", "инн", "taxid", "tax id"},
 		"Дата рождения":       {"рожд", "birth", "dateofbirth", "birthdate", "датарожд", "дата рожд"},
@@ -403,7 +403,7 @@ func checkForPDNPatterns(input string) []string {
 		foundTypes = appendIfNotExists(foundTypes, "Адрес")
 	}
 
-	if containsAny(input, []string{"др", "дата рождения", "birthday"}) {
+	if containsAny(input, []string{"рожден", "birthday"}) {
 		foundTypes = appendIfNotExists(foundTypes, "Дата рождения")
 	}
 
