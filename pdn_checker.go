@@ -54,14 +54,26 @@ func main() {
 	tables := getTablesAndViews(db)
 	fmt.Printf("\nНайдено %d таблиц/представлений для анализа\n", len(tables))
 
-	// Анализ таблиц
-	results := analyzeTables(db, database, tables)
+	// Создаем каналы для результатов и сигнала завершения
+	resultsChan := make(chan PDNResult, 1000)
+	doneChan := make(chan bool)
 
-	// Вывод результатов в CSV
-	err := saveResultsToCSV(server, results)
-	if err != nil {
-		log.Fatal("Ошибка сохранения в CSV:", err)
-	}
+	// Запускаем запись в CSV в отдельной горутине
+	go func() {
+		err := saveResultsToCSVBatches(server, resultsChan)
+		if err != nil {
+			log.Fatal("Ошибка сохранения в CSV:", err)
+		}
+		doneChan <- true
+	}()
+
+	// Запускаем анализ таблиц с пакетной обработкой
+	analyzeTablesWithBatches(db, database, tables, resultsChan)
+
+	// Закрываем канал результатов и ждем завершения записи
+	close(resultsChan)
+	<-doneChan
+
 	fmt.Println("\nОтчет успешно сохранен в report.csv")
 }
 
@@ -142,67 +154,100 @@ func getTablesAndViews(db *sql.DB) []TableInfo {
 	return tables
 }
 
-func analyzeTables(db *sql.DB, database string, tables []TableInfo) []PDNResult {
-	var results []PDNResult
+func analyzeTablesWithBatches(db *sql.DB, database string, tables []TableInfo, resultsChan chan<- PDNResult) {
 	totalTables := len(tables)
 
 	for i, table := range tables {
 		fmt.Printf("\n[%d/%d] Анализ %s.%s (%s)...\n",
 			i+1, totalTables, table.SchemaName, table.TableName, table.TableType)
 
-		columns, err := getColumns(db, table.SchemaName, table.TableName)
+		// Создаем контекст с таймаутом для всей таблицы
+		tableCtx, tableCancel := context.WithTimeout(context.Background(), 2*time.Minute)
+
+		columns, err := getColumns(tableCtx, db, table.SchemaName, table.TableName)
 		if err != nil {
 			log.Printf("⚠ Ошибка получения колонок: %v - пропускаем\n", err)
+			tableCancel()
+			resultsChan <- createTableTimeoutResult(database, table)
 			continue
 		}
 
 		fmt.Printf("  Найдено %d колонок\n", len(columns))
 
-		for _, column := range columns {
-			columnResults := analyzeColumn(db, database, table, column)
-			results = append(results, columnResults...)
-		}
-	}
+		// Канал для результатов обработки колонок
+		columnResultsChan := make(chan []PDNResult, len(columns))
+		errorChan := make(chan error, len(columns))
 
-	// Добавляем записи для колонок без ПДн
-	for _, table := range tables {
-		columns, err := getColumns(db, table.SchemaName, table.TableName)
-		if err != nil {
-			continue
-		}
-
+		// Запускаем обработку каждой колонки в отдельной горутине
 		for _, column := range columns {
-			hasPDN := false
-			for _, res := range results {
-				if res.SchemaName == table.SchemaName && res.TableName == table.TableName && res.ColumnName == column.ColumnName {
-					hasPDN = true
-					break
+			go func(col ColumnInfo) {
+				ctx, cancel := context.WithTimeout(tableCtx, 30*time.Second)
+				defer cancel()
+
+				res, err := analyzeColumn(ctx, db, database, table, col)
+				if err != nil {
+					errorChan <- err
+					columnResultsChan <- nil
+					return
 				}
-			}
+				columnResultsChan <- res
+				errorChan <- nil
+			}(column)
+		}
 
-			if !hasPDN {
-				results = append(results, PDNResult{
+		// Собираем результаты и отправляем в канал
+		processedColumns := make(map[string]bool)
+		for range columns {
+			select {
+			case res := <-columnResultsChan:
+				if res != nil {
+					for _, r := range res {
+						resultsChan <- r // Отправляем каждую запись в канал
+						processedColumns[r.ColumnName] = true
+					}
+				}
+			case <-tableCtx.Done():
+				fmt.Printf("  ⚠ Превышено время обработки таблицы %s.%s\n",
+					table.SchemaName, table.TableName)
+			}
+		}
+
+		// Добавляем записи для колонок, которые не успели обработаться
+		for _, column := range columns {
+			if !processedColumns[column.ColumnName] {
+				resultsChan <- PDNResult{
 					DatabaseName: database,
 					SchemaName:   table.SchemaName,
 					TableName:    table.TableName,
 					TableType:    table.TableType,
 					ColumnName:   column.ColumnName,
-					FoundIn:      "none",
-					SampleValue:  "",
-					Pattern:      "",
-					PDNType:      "Нет",
-				})
+					FoundIn:      "timeout",
+					SampleValue:  "N/A",
+					Pattern:      "Превышено время обработки",
+					PDNType:      "Не обработано",
+				}
 			}
 		}
-	}
 
-	return results
+		tableCancel()
+	}
 }
 
-func getColumns(db *sql.DB, schemaName, tableName string) ([]ColumnInfo, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
+func createTableTimeoutResult(database string, table TableInfo) PDNResult {
+	return PDNResult{
+		DatabaseName: database,
+		SchemaName:   table.SchemaName,
+		TableName:    table.TableName,
+		TableType:    table.TableType,
+		ColumnName:   "ALL_COLUMNS",
+		FoundIn:      "timeout",
+		SampleValue:  "N/A",
+		Pattern:      "Превышено время обработки таблицы",
+		PDNType:      "Не обработано",
+	}
+}
 
+func getColumns(ctx context.Context, db *sql.DB, schemaName, tableName string) ([]ColumnInfo, error) {
 	query := `
 		SELECT c.name AS column_name, tp.name AS data_type
 		FROM sys.columns c
@@ -232,11 +277,11 @@ func getColumns(db *sql.DB, schemaName, tableName string) ([]ColumnInfo, error) 
 	return columns, nil
 }
 
-func analyzeColumn(db *sql.DB, database string, table TableInfo, column ColumnInfo) []PDNResult {
+func analyzeColumn(ctx context.Context, db *sql.DB, database string, table TableInfo, column ColumnInfo) ([]PDNResult, error) {
 	var results []PDNResult
 	fmt.Printf("    Колонка %s (%s)... ", column.ColumnName, column.DataType)
 
-	// Проверка названия колонки
+	// Проверка названия колонки (не требует контекста)
 	pdnTypes := checkForPDNPatterns(column.ColumnName)
 	if len(pdnTypes) > 0 {
 		for _, pdnType := range pdnTypes {
@@ -255,11 +300,11 @@ func analyzeColumn(db *sql.DB, database string, table TableInfo, column ColumnIn
 		fmt.Printf("ПДн в названии (%s) ", strings.Join(pdnTypes, ", "))
 	}
 
-	// Проверка значений
-	values, err := getSampleValues(db, table.SchemaName, table.TableName, column.ColumnName)
+	// Проверка значений (использует контекст)
+	values, err := getSampleValues(ctx, db, table.SchemaName, table.TableName, column.ColumnName)
 	if err != nil {
 		fmt.Printf("ошибка значений: %v\n", err)
-		return results
+		return results, err
 	}
 
 	var valuePdnTypes []string
@@ -291,13 +336,10 @@ func analyzeColumn(db *sql.DB, database string, table TableInfo, column ColumnIn
 	}
 
 	fmt.Println()
-	return results
+	return results, nil
 }
 
-func getSampleValues(db *sql.DB, schemaName, tableName, columnName string) ([]ValuePattern, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-	defer cancel()
-
+func getSampleValues(ctx context.Context, db *sql.DB, schemaName, tableName, columnName string) ([]ValuePattern, error) {
 	query := fmt.Sprintf(`
 		SELECT TOP 5 CAST([%s] AS NVARCHAR(MAX)) AS sample_value
 		FROM [%s].[%s] WITH (NOLOCK)
@@ -337,21 +379,6 @@ func getSampleValues(db *sql.DB, schemaName, tableName, columnName string) ([]Va
 	}
 
 	return result, nil
-}
-
-func getValuePattern(value string) string {
-	var pattern []rune
-	for _, r := range value {
-		switch {
-		case r >= 'а' && r <= 'я' || r >= 'А' && r <= 'Я' || r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z':
-			pattern = append(pattern, 'A')
-		case r >= '0' && r <= '9':
-			pattern = append(pattern, '9')
-		default:
-			pattern = append(pattern, '#')
-		}
-	}
-	return string(pattern)
 }
 
 func checkForPDNPatterns(input string) []string {
@@ -444,7 +471,22 @@ func contains(slice []string, item string) bool {
 	return false
 }
 
-func saveResultsToCSV(server string, results []PDNResult) error {
+func getValuePattern(value string) string {
+	var pattern []rune
+	for _, r := range value {
+		switch {
+		case r >= 'а' && r <= 'я' || r >= 'А' && r <= 'Я' || r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z':
+			pattern = append(pattern, 'A')
+		case r >= '0' && r <= '9':
+			pattern = append(pattern, '9')
+		default:
+			pattern = append(pattern, '#')
+		}
+	}
+	return string(pattern)
+}
+
+func saveResultsToCSVBatches(server string, resultsChan <-chan PDNResult) error {
 	file, err := os.Create("report.csv")
 	if err != nil {
 		return err
@@ -471,30 +513,51 @@ func saveResultsToCSV(server string, results []PDNResult) error {
 		return err
 	}
 
-	// Записываем данные
-	for _, res := range results {
+	// Счетчик записей для пакетной записи
+	batchSize := 100
+	batchCount := 0
+
+	// Обрабатываем записи из канала
+	for result := range resultsChan {
 		hasPDN := "Да"
-		if res.PDNType == "Нет" {
+		if result.PDNType == "Нет" {
 			hasPDN = "Нет"
 		}
 
 		record := []string{
 			server,
-			res.DatabaseName,
-			res.SchemaName,
-			res.TableName,
-			res.TableType,
-			res.ColumnName,
+			result.DatabaseName,
+			result.SchemaName,
+			result.TableName,
+			result.TableType,
+			result.ColumnName,
 			hasPDN,
-			res.PDNType,
-			res.SampleValue,
-			maskSensitiveData(res.SampleValue),
+			result.PDNType,
+			result.SampleValue,
+			maskSensitiveData(result.SampleValue),
 		}
 
 		if err := writer.Write(record); err != nil {
 			return err
 		}
+
+		batchCount++
+		// Периодически сбрасываем буфер на диск
+		if batchCount%batchSize == 0 {
+			writer.Flush()
+			if err := writer.Error(); err != nil {
+				return err
+			}
+			fmt.Printf("Записано %d записей в отчет\n", batchCount)
+		}
 	}
 
+	// Сбрасываем оставшиеся записи
+	writer.Flush()
+	if err := writer.Error(); err != nil {
+		return err
+	}
+
+	fmt.Printf("Всего записано %d записей в отчет\n", batchCount)
 	return nil
 }
