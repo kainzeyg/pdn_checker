@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"log"
@@ -11,7 +12,6 @@ import (
 	_ "github.com/denisenkom/go-mssqldb"
 )
 
-// Структуры данных
 type TableInfo struct {
 	SchemaName string
 	TableName  string
@@ -34,7 +34,7 @@ type PDNResult struct {
 	TableName    string
 	TableType    string
 	ColumnName   string
-	FoundIn      string // "header" или "value"
+	FoundIn      string
 	SampleValue  string
 	Pattern      string
 	PDNType      string
@@ -42,6 +42,24 @@ type PDNResult struct {
 
 func main() {
 	// Ввод параметров подключения
+	server, port, database, username, password := getConnectionParams()
+
+	// Подключение к БД с таймаутами
+	db := connectToDB(server, port, database, username, password)
+	defer db.Close()
+
+	// Получаем список таблиц и представлений
+	tables := getTablesAndViews(db)
+	fmt.Printf("\nНайдено %d таблиц/представлений для анализа\n", len(tables))
+
+	// Анализ таблиц
+	results := analyzeTables(db, database, tables)
+
+	// Вывод результатов
+	printResults(results)
+}
+
+func getConnectionParams() (string, string, string, string, string) {
 	var server, port, database, username, password string
 
 	fmt.Print("Введите сервер БД: ")
@@ -55,7 +73,10 @@ func main() {
 	fmt.Print("Введите пароль: ")
 	fmt.Scanln(&password)
 
-	// Подключение к БД
+	return server, port, database, username, password
+}
+
+func connectToDB(server, port, database, username, password string) *sql.DB {
 	connString := fmt.Sprintf("server=%s;port=%s;database=%s;user id=%s;password=%s",
 		server, port, database, username, password)
 
@@ -63,114 +84,29 @@ func main() {
 	if err != nil {
 		log.Fatal("Ошибка подключения:", err)
 	}
-	defer db.Close()
 
-	// Устанавливаем таймаут для Ping
-	db.SetConnMaxLifetime(time.Minute * 3)
-	db.SetMaxOpenConns(1)
-	db.SetMaxIdleConns(1)
+	// Настройки соединения
+	db.SetConnMaxLifetime(10 * time.Minute)
+	db.SetMaxOpenConns(5)
+	db.SetMaxIdleConns(2)
 
-	err = db.Ping()
-	if err != nil {
+	// Проверка подключения с таймаутом
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	if err := db.PingContext(ctx); err != nil {
 		log.Fatal("Ошибка проверки подключения:", err)
 	}
 
-	fmt.Println("Успешное подключение к БД")
-
-	// Получаем список таблиц и представлений
-	fmt.Println("\nПолучение списка таблиц и представлений...")
-	tables, err := getTablesAndViews(db)
-	if err != nil {
-		log.Fatal("Ошибка получения таблиц:", err)
-	}
-
-	fmt.Printf("Найдено %d таблиц/представлений для анализа\n", len(tables))
-
-	var results []PDNResult
-	totalTables := len(tables)
-	processedTables := 0
-
-	// Анализ каждой таблицы
-	for _, table := range tables {
-		processedTables++
-		fmt.Printf("\n[%d/%d] Анализ таблицы %s.%s (%s)...\n",
-			processedTables, totalTables, table.SchemaName, table.TableName, table.TableType)
-
-		columns, err := getColumns(db, table.SchemaName, table.TableName)
-		if err != nil {
-			log.Printf("Ошибка получения колонок для %s.%s: %v - пропускаем\n", table.SchemaName, table.TableName, err)
-			continue
-		}
-
-		fmt.Printf("Найдено %d колонок\n", len(columns))
-
-		for j, column := range columns {
-			fmt.Printf("  Колонка [%d/%d]: %s (%s)... ", j+1, len(columns), column.ColumnName, column.DataType)
-
-			// Проверка НАЗВАНИЯ столбца
-			pdnTypes := checkForPDNPatterns(column.ColumnName)
-			if len(pdnTypes) > 0 {
-				for _, pdnType := range pdnTypes {
-					results = append(results, PDNResult{
-						DatabaseName: database,
-						SchemaName:   table.SchemaName,
-						TableName:    table.TableName,
-						TableType:    table.TableType,
-						ColumnName:   column.ColumnName,
-						FoundIn:      "header",
-						SampleValue:  "N/A",
-						Pattern:      "",
-						PDNType:      pdnType,
-					})
-				}
-				fmt.Printf("найдено ПДн в названии (%s) ", strings.Join(pdnTypes, ", "))
-			}
-
-			// Проверка ЗНАЧЕНИЙ в столбце
-			values, err := getSampleValues(db, table.SchemaName, table.TableName, column.ColumnName)
-			if err != nil {
-				fmt.Printf("ошибка доступа к значениям: %v - пропускаем\n", err)
-				continue
-			}
-
-			var valuePdnTypes []string
-			for _, val := range values {
-				if types := checkForPDNPatterns(val.Value); len(types) > 0 {
-					valuePdnTypes = appendIfNotExists(valuePdnTypes, types...)
-					for _, pdnType := range types {
-						results = append(results, PDNResult{
-							DatabaseName: database,
-							SchemaName:   table.SchemaName,
-							TableName:    table.TableName,
-							TableType:    table.TableType,
-							ColumnName:   column.ColumnName,
-							FoundIn:      "value",
-							SampleValue:  maskSensitiveData(val.Value),
-							Pattern:      val.Pattern,
-							PDNType:      pdnType,
-						})
-					}
-				}
-			}
-
-			if len(valuePdnTypes) > 0 {
-				fmt.Printf("найдено ПДн в значениях (%s)", strings.Join(valuePdnTypes, ", "))
-			}
-
-			if len(pdnTypes) == 0 && len(valuePdnTypes) == 0 {
-				fmt.Printf("ПДн не найдено")
-			}
-
-			fmt.Println()
-		}
-	}
-
-	// Вывод результатов
-	printResults(results)
+	fmt.Println("✓ Успешное подключение к БД")
+	return db
 }
 
-// Получение списка таблиц и представлений
-func getTablesAndViews(db *sql.DB) ([]TableInfo, error) {
+func getTablesAndViews(db *sql.DB) []TableInfo {
+	fmt.Println("\nПолучение списка таблиц и представлений...")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+
 	query := `
 		SELECT s.name AS schema_name, t.name AS table_name, t.type_desc AS table_type
 		FROM sys.tables t
@@ -181,27 +117,54 @@ func getTablesAndViews(db *sql.DB) ([]TableInfo, error) {
 		INNER JOIN sys.schemas s ON v.schema_id = s.schema_id
 	`
 
-	rows, err := db.Query(query)
+	rows, err := db.QueryContext(ctx, query)
 	if err != nil {
-		return nil, err
+		log.Fatal("Ошибка получения таблиц:", err)
 	}
 	defer rows.Close()
 
 	var tables []TableInfo
 	for rows.Next() {
 		var ti TableInfo
-		err := rows.Scan(&ti.SchemaName, &ti.TableName, &ti.TableType)
-		if err != nil {
-			return nil, err
+		if err := rows.Scan(&ti.SchemaName, &ti.TableName, &ti.TableType); err != nil {
+			log.Println("Ошибка чтения данных таблицы:", err)
+			continue
 		}
 		tables = append(tables, ti)
 	}
 
-	return tables, nil
+	return tables
 }
 
-// Получение столбцов таблицы
+func analyzeTables(db *sql.DB, database string, tables []TableInfo) []PDNResult {
+	var results []PDNResult
+	totalTables := len(tables)
+
+	for i, table := range tables {
+		fmt.Printf("\n[%d/%d] Анализ %s.%s (%s)...\n",
+			i+1, totalTables, table.SchemaName, table.TableName, table.TableType)
+
+		columns, err := getColumns(db, table.SchemaName, table.TableName)
+		if err != nil {
+			log.Printf("⚠ Ошибка получения колонок: %v - пропускаем\n", err)
+			continue
+		}
+
+		fmt.Printf("  Найдено %d колонок\n", len(columns))
+
+		for _, column := range columns {
+			columnResults := analyzeColumn(db, database, table, column)
+			results = append(results, columnResults...)
+		}
+	}
+
+	return results
+}
+
 func getColumns(db *sql.DB, schemaName, tableName string) ([]ColumnInfo, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
 	query := `
 		SELECT c.name AS column_name, tp.name AS data_type
 		FROM sys.columns c
@@ -211,18 +174,19 @@ func getColumns(db *sql.DB, schemaName, tableName string) ([]ColumnInfo, error) 
 		WHERE s.name = @schema AND o.name = @table
 	`
 
-	rows, err := db.Query(query, sql.Named("schema", schemaName), sql.Named("table", tableName))
+	rows, err := db.QueryContext(ctx, query,
+		sql.Named("schema", schemaName),
+		sql.Named("table", tableName))
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("запрос колонок: %v", err)
 	}
 	defer rows.Close()
 
 	var columns []ColumnInfo
 	for rows.Next() {
 		var ci ColumnInfo
-		err := rows.Scan(&ci.ColumnName, &ci.DataType)
-		if err != nil {
-			return nil, err
+		if err := rows.Scan(&ci.ColumnName, &ci.DataType); err != nil {
+			return nil, fmt.Errorf("чтение колонки: %v", err)
 		}
 		columns = append(columns, ci)
 	}
@@ -230,26 +194,89 @@ func getColumns(db *sql.DB, schemaName, tableName string) ([]ColumnInfo, error) 
 	return columns, nil
 }
 
-// Получение примеров значений из столбца
+func analyzeColumn(db *sql.DB, database string, table TableInfo, column ColumnInfo) []PDNResult {
+	var results []PDNResult
+	fmt.Printf("    Колонка %s (%s)... ", column.ColumnName, column.DataType)
+
+	// Проверка названия колонки
+	pdnTypes := checkForPDNPatterns(column.ColumnName)
+	if len(pdnTypes) > 0 {
+		for _, pdnType := range pdnTypes {
+			results = append(results, PDNResult{
+				DatabaseName: database,
+				SchemaName:   table.SchemaName,
+				TableName:    table.TableName,
+				TableType:    table.TableType,
+				ColumnName:   column.ColumnName,
+				FoundIn:      "header",
+				SampleValue:  "N/A",
+				Pattern:      "",
+				PDNType:      pdnType,
+			})
+		}
+		fmt.Printf("ПДн в названии (%s) ", strings.Join(pdnTypes, ", "))
+	}
+
+	// Проверка значений
+	values, err := getSampleValues(db, table.SchemaName, table.TableName, column.ColumnName)
+	if err != nil {
+		fmt.Printf("ошибка значений: %v\n", err)
+		return results
+	}
+
+	var valuePdnTypes []string
+	for _, val := range values {
+		if types := checkForPDNPatterns(val.Value); len(types) > 0 {
+			valuePdnTypes = appendIfNotExists(valuePdnTypes, types...)
+			for _, pdnType := range types {
+				results = append(results, PDNResult{
+					DatabaseName: database,
+					SchemaName:   table.SchemaName,
+					TableName:    table.TableName,
+					TableType:    table.TableType,
+					ColumnName:   column.ColumnName,
+					FoundIn:      "value",
+					SampleValue:  maskSensitiveData(val.Value),
+					Pattern:      val.Pattern,
+					PDNType:      pdnType,
+				})
+			}
+		}
+	}
+
+	if len(valuePdnTypes) > 0 {
+		fmt.Printf("ПДн в значениях (%s)", strings.Join(valuePdnTypes, ", "))
+	}
+
+	if len(pdnTypes) == 0 && len(valuePdnTypes) == 0 {
+		fmt.Printf("нет ПДн")
+	}
+
+	fmt.Println()
+	return results
+}
+
 func getSampleValues(db *sql.DB, schemaName, tableName, columnName string) ([]ValuePattern, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+	defer cancel()
+
 	query := fmt.Sprintf(`
-		SELECT TOP 50 CAST([%s] AS NVARCHAR(MAX)) AS sample_value
-		FROM [%s].[%s]
+		SELECT TOP 20 CAST([%s] AS NVARCHAR(MAX)) AS sample_value
+		FROM [%s].[%s] WITH (NOLOCK)
 		WHERE [%s] IS NOT NULL AND [%s] != ''
 	`, columnName, schemaName, tableName, columnName, columnName)
 
-	rows, err := db.Query(query)
+	rows, err := db.QueryContext(ctx, query)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("запрос значений: %v", err)
 	}
 	defer rows.Close()
 
 	var values []string
 	for rows.Next() {
 		var val string
-		err := rows.Scan(&val)
-		if err != nil {
-			return nil, err
+		if err := rows.Scan(&val); err != nil {
+			return nil, fmt.Errorf("чтение значения: %v", err)
 		}
 		values = append(values, val)
 	}
@@ -274,7 +301,6 @@ func getSampleValues(db *sql.DB, schemaName, tableName, columnName string) ([]Va
 	return result, nil
 }
 
-// Определение паттерна значения
 func getValuePattern(value string) string {
 	var pattern []rune
 	for _, r := range value {
@@ -290,12 +316,11 @@ func getValuePattern(value string) string {
 	return string(pattern)
 }
 
-// Проверка на ПДн по расширенным правилам
 func checkForPDNPatterns(input string) []string {
 	input = strings.ToLower(input)
 	var foundTypes []string
 
-	// Паттерны для проверки значений
+	// Паттерны значений
 	valuePatterns := map[string]*regexp.Regexp{
 		"Email":           regexp.MustCompile(`[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}`),
 		"Телефон":         regexp.MustCompile(`(\+7|8)[\s\-\(]?\d{3}[\)\s\-]?\d{3}[\s\-]?\d{2}[\s\-]?\d{2}`),
@@ -305,7 +330,7 @@ func checkForPDNPatterns(input string) []string {
 		"Кредитная карта": regexp.MustCompile(`\d{4}[\s\-]?\d{4}[\s\-]?\d{4}[\s\-]?\d{4}`),
 	}
 
-	// Паттерны для проверки заголовков
+	// Паттерны заголовков
 	headerPatterns := map[string][]string{
 		"ФИО":                 {"фамил", "fami", "surn", "lastname", "last name", "имя", "name", "firstname", "first name", "отчест", "middlename", "middle name", "patronym", "фам", "fio", "фио", "fullname", "full name"},
 		"Персональные данные": {"сотруд", "руковод", "manag", "физи", "персон", "person"},
@@ -346,7 +371,6 @@ func checkForPDNPatterns(input string) []string {
 	return foundTypes
 }
 
-// Вспомогательные функции
 func maskSensitiveData(value string) string {
 	if len(value) > 8 {
 		return value[:4] + "****" + value[len(value)-4:]
@@ -365,21 +389,22 @@ func containsAny(s string, substrings []string) bool {
 
 func appendIfNotExists(slice []string, items ...string) []string {
 	for _, item := range items {
-		exists := false
-		for _, s := range slice {
-			if s == item {
-				exists = true
-				break
-			}
-		}
-		if !exists {
+		if !contains(slice, item) {
 			slice = append(slice, item)
 		}
 	}
 	return slice
 }
 
-// Вывод результатов
+func contains(slice []string, item string) bool {
+	for _, s := range slice {
+		if s == item {
+			return true
+		}
+	}
+	return false
+}
+
 func printResults(results []PDNResult) {
 	fmt.Println("\nРезультаты поиска ПДн:")
 	fmt.Println("==============================================")
