@@ -299,7 +299,7 @@ func getSampleValues(db *sql.DB, schemaName, tableName, columnName string) ([]Va
 	defer cancel()
 
 	query := fmt.Sprintf(`
-		SELECT TOP 10 CAST([%s] AS NVARCHAR(MAX)) AS sample_value
+		SELECT TOP 5 CAST([%s] AS NVARCHAR(MAX)) AS sample_value
 		FROM [%s].[%s] WITH (NOLOCK)
 		WHERE [%s] IS NOT NULL AND [%s] != ''
 	`, columnName, schemaName, tableName, columnName, columnName)
