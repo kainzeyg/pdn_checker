@@ -375,7 +375,7 @@ func checkForPDNPatterns(input string) []string {
 		"Адрес":               {"адрес", "address", "addr", "location", "место"},
 		"Email":               {"эп", "mail", "адресэп", "адрес эп", "email"},
 		"Телефон":             {"телефон", "phone", "tel", "мобильн", "mobile", "contact"},
-		"Паспорт":             {"паспорт", "passport", "серия", "series", "номер", "number"},
+		"Паспорт":             {"паспорт", "passport", "серия", "series"},
 		"СНИЛС/ИНН":           {"снилс", "snils", "инн", "taxid", "tax id"},
 		"Дата рождения":       {"рожд", "birth", "dateofbirth", "birthdate", "датарожд", "дата рожд"},
 		"Таб. номер":          {"таб", "табель"},
