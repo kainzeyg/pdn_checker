@@ -6,6 +6,7 @@ import (
 	"log"
 	"regexp"
 	"strings"
+	"time"
 
 	_ "github.com/denisenkom/go-mssqldb"
 )
@@ -64,6 +65,11 @@ func main() {
 	}
 	defer db.Close()
 
+	// Устанавливаем таймаут для Ping
+	db.SetConnMaxLifetime(time.Minute * 3)
+	db.SetMaxOpenConns(1)
+	db.SetMaxIdleConns(1)
+
 	err = db.Ping()
 	if err != nil {
 		log.Fatal("Ошибка проверки подключения:", err)
@@ -72,24 +78,38 @@ func main() {
 	fmt.Println("Успешное подключение к БД")
 
 	// Получаем список таблиц и представлений
+	fmt.Println("\nПолучение списка таблиц и представлений...")
 	tables, err := getTablesAndViews(db)
 	if err != nil {
 		log.Fatal("Ошибка получения таблиц:", err)
 	}
 
+	fmt.Printf("Найдено %d таблиц/представлений для анализа\n", len(tables))
+
 	var results []PDNResult
+	totalTables := len(tables)
+	processedTables := 0
 
 	// Анализ каждой таблицы
 	for _, table := range tables {
+		processedTables++
+		fmt.Printf("\n[%d/%d] Анализ таблицы %s.%s (%s)...\n",
+			processedTables, totalTables, table.SchemaName, table.TableName, table.TableType)
+
 		columns, err := getColumns(db, table.SchemaName, table.TableName)
 		if err != nil {
-			log.Printf("Ошибка получения колонок для %s.%s: %v", table.SchemaName, table.TableName, err)
+			log.Printf("Ошибка получения колонок для %s.%s: %v - пропускаем\n", table.SchemaName, table.TableName, err)
 			continue
 		}
 
-		for _, column := range columns {
+		fmt.Printf("Найдено %d колонок\n", len(columns))
+
+		for j, column := range columns {
+			fmt.Printf("  Колонка [%d/%d]: %s (%s)... ", j+1, len(columns), column.ColumnName, column.DataType)
+
 			// Проверка НАЗВАНИЯ столбца
-			if pdnTypes := checkForPDNPatterns(column.ColumnName); len(pdnTypes) > 0 {
+			pdnTypes := checkForPDNPatterns(column.ColumnName)
+			if len(pdnTypes) > 0 {
 				for _, pdnType := range pdnTypes {
 					results = append(results, PDNResult{
 						DatabaseName: database,
@@ -103,18 +123,21 @@ func main() {
 						PDNType:      pdnType,
 					})
 				}
+				fmt.Printf("найдено ПДн в названии (%s) ", strings.Join(pdnTypes, ", "))
 			}
 
 			// Проверка ЗНАЧЕНИЙ в столбце
 			values, err := getSampleValues(db, table.SchemaName, table.TableName, column.ColumnName)
 			if err != nil {
-				log.Printf("Ошибка получения значений для %s.%s: %v", table.TableName, column.ColumnName, err)
+				fmt.Printf("ошибка доступа к значениям: %v - пропускаем\n", err)
 				continue
 			}
 
+			var valuePdnTypes []string
 			for _, val := range values {
-				if pdnTypes := checkForPDNPatterns(val.Value); len(pdnTypes) > 0 {
-					for _, pdnType := range pdnTypes {
+				if types := checkForPDNPatterns(val.Value); len(types) > 0 {
+					valuePdnTypes = appendIfNotExists(valuePdnTypes, types...)
+					for _, pdnType := range types {
 						results = append(results, PDNResult{
 							DatabaseName: database,
 							SchemaName:   table.SchemaName,
@@ -129,6 +152,16 @@ func main() {
 					}
 				}
 			}
+
+			if len(valuePdnTypes) > 0 {
+				fmt.Printf("найдено ПДн в значениях (%s)", strings.Join(valuePdnTypes, ", "))
+			}
+
+			if len(pdnTypes) == 0 && len(valuePdnTypes) == 0 {
+				fmt.Printf("ПДн не найдено")
+			}
+
+			fmt.Println()
 		}
 	}
 
@@ -330,13 +363,20 @@ func containsAny(s string, substrings []string) bool {
 	return false
 }
 
-func appendIfNotExists(slice []string, item string) []string {
-	for _, s := range slice {
-		if s == item {
-			return slice
+func appendIfNotExists(slice []string, items ...string) []string {
+	for _, item := range items {
+		exists := false
+		for _, s := range slice {
+			if s == item {
+				exists = true
+				break
+			}
+		}
+		if !exists {
+			slice = append(slice, item)
 		}
 	}
-	return append(slice, item)
+	return slice
 }
 
 // Вывод результатов
