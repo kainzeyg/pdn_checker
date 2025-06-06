@@ -283,34 +283,44 @@ func analyzeColumn(ctx context.Context, db *sql.DB, database string, table Table
 	// Выводим информацию о начале обработки колонки
 	log.Printf("Обработка: %s.%s.%s (%s)", table.SchemaName, table.TableName, column.ColumnName, column.DataType)
 
-	// Проверка названия колонки
+	// 1. Сначала получаем примеры значений (в любом случае)
+	values, err := getSampleValues(ctx, db, table.SchemaName, table.TableName, column.ColumnName)
+	if err != nil {
+		log.Printf("  Ошибка получения значений: %v", err)
+		values = []ValuePattern{} // Пустой массив при ошибке
+	}
+
+	// 2. Проверка названия колонки
 	pdnTypes := checkForPDNPatterns(column.ColumnName)
 	headerStatus := "нет ПДн"
 	if len(pdnTypes) > 0 {
 		headerStatus = "есть ПДн (" + strings.Join(pdnTypes, ", ") + ")"
 		for _, pdnType := range pdnTypes {
-			results = append(results, PDNResult{
+			res := PDNResult{
 				DatabaseName: database,
 				SchemaName:   table.SchemaName,
 				TableName:    table.TableName,
 				TableType:    table.TableType,
 				ColumnName:   column.ColumnName,
 				FoundIn:      "header",
-				SampleValue:  "N/A",
-				Pattern:      "",
 				PDNType:      pdnType,
-			})
+			}
+
+			// Добавляем примеры значений, если они есть
+			if len(values) > 0 {
+				res.SampleValue = values[0].Value
+				res.Pattern = values[0].Pattern
+			} else {
+				res.SampleValue = "N/A"
+				res.Pattern = ""
+			}
+
+			results = append(results, res)
 		}
 	}
 	log.Printf("  Название: %s", headerStatus)
 
-	// Проверка значений
-	values, err := getSampleValues(ctx, db, table.SchemaName, table.TableName, column.ColumnName)
-	if err != nil {
-		log.Printf("  Значения: ошибка - %v", err)
-		return results, err
-	}
-
+	// 3. Проверка значений
 	var valuePdnTypes []string
 	valueStatus := "нет ПДн"
 	for _, val := range values {
@@ -324,7 +334,7 @@ func analyzeColumn(ctx context.Context, db *sql.DB, database string, table Table
 					TableType:    table.TableType,
 					ColumnName:   column.ColumnName,
 					FoundIn:      "value",
-					SampleValue:  val.Value, // Оригинальное значение
+					SampleValue:  val.Value,
 					Pattern:      val.Pattern,
 					PDNType:      pdnType,
 				})
@@ -337,22 +347,30 @@ func analyzeColumn(ctx context.Context, db *sql.DB, database string, table Table
 	}
 	log.Printf("  Значения: %s", valueStatus)
 
-	// Если ничего не найдено, добавляем запись об отсутствии ПДн
+	// 4. Если ничего не найдено, добавляем запись с примерами значений
 	if len(pdnTypes) == 0 && len(valuePdnTypes) == 0 {
-		results = append(results, PDNResult{
+		res := PDNResult{
 			DatabaseName: database,
 			SchemaName:   table.SchemaName,
 			TableName:    table.TableName,
 			TableType:    table.TableType,
 			ColumnName:   column.ColumnName,
 			FoundIn:      "none",
-			SampleValue:  "N/A",
-			Pattern:      "",
 			PDNType:      "Нет",
-		})
+		}
+
+		if len(values) > 0 {
+			res.SampleValue = values[0].Value
+			res.Pattern = values[0].Pattern
+		} else {
+			res.SampleValue = "N/A"
+			res.Pattern = ""
+		}
+
+		results = append(results, res)
 	}
 
-	log.Printf("  Итог: колонка обработана")
+	log.Printf("  Итог: колонка обработана, найдено %d записей ПДн", len(results))
 	return results, nil
 }
 
