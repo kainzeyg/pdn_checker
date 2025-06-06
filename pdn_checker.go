@@ -173,6 +173,12 @@ func analyzeTablesWithBatches(db *sql.DB, database string, tables []TableInfo, r
 		}
 
 		fmt.Printf("  Найдено %d колонок\n", len(columns))
+		for _, col := range columns {
+			fmt.Printf("  - %s (%s)\n", col.ColumnName, col.DataType)
+		}
+
+		// Собираем все результаты по таблице для проверки адреса
+		var allTableResults []PDNResult
 
 		// Канал для результатов обработки колонок
 		columnResultsChan := make(chan []PDNResult, len(columns))
@@ -200,16 +206,48 @@ func analyzeTablesWithBatches(db *sql.DB, database string, tables []TableInfo, r
 		for range columns {
 			select {
 			case res := <-columnResultsChan:
-
-				for _, r := range res {
-					resultsChan <- r // Отправляем каждую запись в канал
-					processedColumns[r.ColumnName] = true
+				if res != nil {
+					allTableResults = append(allTableResults, res...)
+					for _, r := range res {
+						resultsChan <- r
+						processedColumns[r.ColumnName] = true
+					}
 				}
-
 			case <-tableCtx.Done():
 				fmt.Printf("  ⚠ Превышено время обработки таблицы %s.%s\n",
 					table.SchemaName, table.TableName)
 			}
+		}
+
+		// Проверяем, есть ли в таблице другие персональные данные кроме адреса
+		hasOtherPersonalData := false
+		for _, res := range allTableResults {
+			if res.PDNType != "Адрес" && res.PDNType != "Нет" && res.PDNType != "Не обработано" {
+				hasOtherPersonalData = true
+				break
+			}
+		}
+
+		// Фильтруем результаты для адреса
+		if !hasOtherPersonalData {
+			for i, res := range allTableResults {
+				if res.PDNType == "Адрес" {
+					allTableResults[i].PDNType = "Нет"
+				}
+			}
+		}
+
+		// Выводим итоги по таблице
+		fmt.Println("  Итоги по таблице:")
+		hasPDN := false
+		for _, res := range allTableResults {
+			if res.PDNType != "Нет" && res.PDNType != "Не обработано" {
+				fmt.Printf("    * %s: %s (%s)\n", res.ColumnName, res.PDNType, res.FoundIn)
+				hasPDN = true
+			}
+		}
+		if !hasPDN {
+			fmt.Println("    * Персональные данные не обнаружены")
 		}
 
 		// Добавляем записи для колонок, которые не успели обработаться
@@ -280,21 +318,22 @@ func getColumns(ctx context.Context, db *sql.DB, schemaName, tableName string) (
 func analyzeColumn(ctx context.Context, db *sql.DB, database string, table TableInfo, column ColumnInfo) ([]PDNResult, error) {
 	var results []PDNResult
 
-	// Выводим информацию о начале обработки колонки
-	log.Printf("Обработка: %s.%s.%s (%s)", table.SchemaName, table.TableName, column.ColumnName, column.DataType)
-
-	// 1. Сначала получаем примеры значений (в любом случае)
+	// Получаем примеры значений
 	values, err := getSampleValues(ctx, db, table.SchemaName, table.TableName, column.ColumnName)
 	if err != nil {
-		log.Printf("  Ошибка получения значений: %v", err)
+		log.Printf("  Ошибка получения значений для %s.%s: %v", table.TableName, column.ColumnName, err)
 		values = []ValuePattern{} // Пустой массив при ошибке
 	}
 
-	// 2. Проверка названия колонки
+	// Определяем sampleValue
+	sampleValue := "N/A"
+	if len(values) > 0 {
+		sampleValue = values[0].Value
+	}
+
+	// Проверка названия колонки
 	pdnTypes := checkForPDNPatterns(column.ColumnName)
-	headerStatus := "нет ПДн"
 	if len(pdnTypes) > 0 {
-		headerStatus = "есть ПДн (" + strings.Join(pdnTypes, ", ") + ")"
 		for _, pdnType := range pdnTypes {
 			res := PDNResult{
 				DatabaseName: database,
@@ -303,26 +342,18 @@ func analyzeColumn(ctx context.Context, db *sql.DB, database string, table Table
 				TableType:    table.TableType,
 				ColumnName:   column.ColumnName,
 				FoundIn:      "header",
+				SampleValue:  sampleValue,
 				PDNType:      pdnType,
 			}
-
-			// Добавляем примеры значений, если они есть
 			if len(values) > 0 {
-				res.SampleValue = values[0].Value
 				res.Pattern = values[0].Pattern
-			} else {
-				res.SampleValue = "N/A"
-				res.Pattern = ""
 			}
-
 			results = append(results, res)
 		}
 	}
-	log.Printf("  Название: %s", headerStatus)
 
-	// 3. Проверка значений
+	// Проверка значений
 	var valuePdnTypes []string
-	valueStatus := "нет ПДн"
 	for _, val := range values {
 		if types := checkForPDNPatterns(val.Value); len(types) > 0 {
 			valuePdnTypes = appendIfNotExists(valuePdnTypes, types...)
@@ -342,12 +373,7 @@ func analyzeColumn(ctx context.Context, db *sql.DB, database string, table Table
 		}
 	}
 
-	if len(valuePdnTypes) > 0 {
-		valueStatus = "есть ПДн (" + strings.Join(valuePdnTypes, ", ") + ")"
-	}
-	log.Printf("  Значения: %s", valueStatus)
-
-	// 4. Если ничего не найдено, добавляем запись с примерами значений
+	// Если ничего не найдено, добавляем запись
 	if len(pdnTypes) == 0 && len(valuePdnTypes) == 0 {
 		res := PDNResult{
 			DatabaseName: database,
@@ -356,21 +382,15 @@ func analyzeColumn(ctx context.Context, db *sql.DB, database string, table Table
 			TableType:    table.TableType,
 			ColumnName:   column.ColumnName,
 			FoundIn:      "none",
+			SampleValue:  sampleValue,
 			PDNType:      "Нет",
 		}
-
 		if len(values) > 0 {
-			res.SampleValue = values[0].Value
 			res.Pattern = values[0].Pattern
-		} else {
-			res.SampleValue = "N/A"
-			res.Pattern = ""
 		}
-
 		results = append(results, res)
 	}
 
-	log.Printf("  Итог: колонка обработана, найдено %d записей ПДн", len(results))
 	return results, nil
 }
 
@@ -394,6 +414,24 @@ func getSampleValues(ctx context.Context, db *sql.DB, schemaName, tableName, col
 			return nil, fmt.Errorf("чтение значения: %v", err)
 		}
 		values = append(values, val)
+	}
+
+	// Если нет значений, проверяем, есть ли вообще данные в колонке
+	if len(values) == 0 {
+		checkQuery := fmt.Sprintf(`
+			SELECT TOP 1 1 
+			FROM [%s].[%s] WITH (NOLOCK)
+			WHERE [%s] IS NOT NULL AND [%s] != ''
+		`, schemaName, tableName, columnName, columnName)
+
+		var exists int
+		err := db.QueryRowContext(ctx, checkQuery).Scan(&exists)
+		if err != nil {
+			if err == sql.ErrNoRows {
+				return nil, nil // Колонка пустая или содержит только NULL/пустые значения
+			}
+			return nil, fmt.Errorf("проверка наличия данных: %v", err)
+		}
 	}
 
 	// Группировка по паттернам
@@ -432,16 +470,17 @@ func checkForPDNPatterns(input string) []string {
 
 	// Паттерны заголовков
 	headerPatterns := map[string][]string{
-		"ФИО":                 {"фамил", "fami", "surn", "lastname", "last name", "имя", "firstname", "first name", "отчест", "middlename", "middle name", "patronym", "фам", "fio", "фио", "fullname", "full name"},
-		"Персональные данные": {"сотруд", "руковод", "manag", "физи", "физл", "персон", "person", "empl"},
+		"ФИО":                 {"фамил", "fami", "surn", "lastname", "last name", "last_name", "имя", "firstname", "first name", "first_name", "отчест", "middlename", "middle name", "middle_name", "patronym", "фам", "fio", "фио", "fullname", "full name"},
+		"Персональные данные": {"контакт", "сотруд", "руковод", "manag", "физи", "физл", "персон", "person", "empl"},
 		"Адрес":               {"адрес", "address", "addr", "location", "место"},
-		"Email":               {"эп", "mail", "адресэп", "адрес эп", "email"},
+		"Email":               {"эп", "mail", "адресэп", "адрес эп"},
 		"Телефон":             {"телефон", "phone", "tel", "мобильн", "mobile", "contact"},
 		"Паспорт":             {"паспор", "passpor", "серия", "series"},
 		"СНИЛС/ИНН":           {"снилс", "snils", "инн", "taxid", "tax id"},
 		"Дата рождения":       {"рожд", "birth", "dateofbirth", "birthdate", "датарожд", "дата рожд"},
 		"Таб. номер":          {"таб", "табель"},
 		"Фото":                {"фото", "foto", "photo"},
+		"Пол":                 {"пол", "gender", "sex"},
 	}
 
 	// Проверка значений
@@ -542,7 +581,7 @@ func saveResultsToCSVBatches(server string, resultsChan <-chan PDNResult) error 
 		"ПДн (Да\\Нет)",
 		"Тип ПДн",
 		"Пример значения",
-		"Пример значения с маскированием", // Добавляем вторую колонку для маскированных данных
+		"Пример значения с маскированием",
 	}
 	if err := writer.Write(header); err != nil {
 		return err
@@ -553,11 +592,10 @@ func saveResultsToCSVBatches(server string, resultsChan <-chan PDNResult) error 
 
 	for result := range resultsChan {
 		hasPDN := "Да"
-		if result.PDNType == "Нет" {
+		if result.PDNType == "Нет" || result.PDNType == "Не обработано" {
 			hasPDN = "Нет"
 		}
 
-		// В одной колонке оригинальное значение, в другой - замаскированное
 		record := []string{
 			server,
 			result.DatabaseName,
@@ -567,8 +605,8 @@ func saveResultsToCSVBatches(server string, resultsChan <-chan PDNResult) error 
 			result.ColumnName,
 			hasPDN,
 			result.PDNType,
-			result.SampleValue,                    // Оригинальное значение
-			maskSensitiveData(result.SampleValue), // Замаскированное значение
+			result.SampleValue,
+			maskSensitiveData(result.SampleValue),
 		}
 
 		if err := writer.Write(record); err != nil {
