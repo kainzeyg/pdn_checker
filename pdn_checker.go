@@ -98,11 +98,11 @@ func connectToDB(server, port, database, username, password string) *sql.DB {
 		log.Fatal("Ошибка подключения:", err)
 	}
 
-	db.SetConnMaxLifetime(10 * time.Minute)
+	db.SetConnMaxLifetime(15 * time.Minute)
 	db.SetMaxOpenConns(5)
 	db.SetMaxIdleConns(2)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 	if err := db.PingContext(ctx); err != nil {
 		log.Fatal("Ошибка проверки подключения:", err)
@@ -115,7 +115,7 @@ func connectToDB(server, port, database, username, password string) *sql.DB {
 func getTablesAndViews(db *sql.DB) []TableInfo {
 	fmt.Println("\nПолучение списка таблиц и представлений...")
 
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 
 	query := `
@@ -154,7 +154,7 @@ func analyzeTablesWithBatches(db *sql.DB, database string, tables []TableInfo, r
 		fmt.Printf("\n[%d/%d] Анализ %s.%s (%s)...\n",
 			i+1, totalTables, table.SchemaName, table.TableName, table.TableType)
 
-		tableCtx, tableCancel := context.WithTimeout(context.Background(), 3*time.Minute)
+		tableCtx, tableCancel := context.WithTimeout(context.Background(), 5*time.Minute)
 
 		columns, err := getColumns(tableCtx, db, table.SchemaName, table.TableName)
 		if err != nil {
@@ -175,7 +175,7 @@ func analyzeTablesWithBatches(db *sql.DB, database string, tables []TableInfo, r
 
 		for _, column := range columns {
 			go func(col ColumnInfo) {
-				ctx, cancel := context.WithTimeout(tableCtx, 30*time.Second)
+				ctx, cancel := context.WithTimeout(tableCtx, 60*time.Second)
 				defer cancel()
 
 				res, err := analyzeColumn(ctx, db, database, table, col)
