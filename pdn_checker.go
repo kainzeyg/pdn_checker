@@ -484,6 +484,7 @@ func checkForPDNPatterns(input string) []string {
 		"Кредитная карта": regexp.MustCompile(`\d{4}[\s\-]?\d{4}[\s\-]?\d{4}[\s\-]?\d{4}`),
 		"Семья":           regexp.MustCompile(`(?i)\b(дочь|сын|мать|отец|брат|сестра|супруг[аи]?|муж|жена|родител[яи]|ребенок|дети|вдова|вдовец)\b`),
 		"Армейка":         regexp.MustCompile(`(?i)\b(вус\s*\d{4,6}|воен\s*учетн\w*\s*специальн\w*|специальн\w*\s*по\s*вус)\b`),
+		"Пол":             regexp.MustCompile(`(?i)\b(муж(ской|чина)?|жен(ский|щина)?|m(ale)?|f(emale)?|м|ж)\b`),
 	}
 
 	headerPatterns := map[string][]string{
