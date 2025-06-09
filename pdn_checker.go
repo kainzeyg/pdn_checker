@@ -479,9 +479,8 @@ func checkForPDNPatterns(input string) []string {
 	valuePatterns := map[string]*regexp.Regexp{
 		"Email":           regexp.MustCompile(`[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}`),
 		"Телефон":         regexp.MustCompile(`(\+7|8)[\s\-\(]?\d{3}[\)\s\-]?\d{3}[\s\-]?\d{2}[\s\-]?\d{2}`),
-		"Паспорт РФ":      regexp.MustCompile(`\b(\d{2}\s?\d{2}\s?\d{6}|\d{10})\b|(?:паспорт|серия|номер)[^\d]*(\d{4})[^\d]*(\d{6})`),
+		"Паспорт РФ":      regexp.MustCompile(`\b\d{2}\s?\d{2}\s?\d{6}\b|(?:паспорт|серия|номер)[^\d]*\d{4}[^\d]*\d{6}`),
 		"СНИЛС":           regexp.MustCompile(`\b\d{3}[-]?\d{3}[-]?\d{3}[-\s]?\d{2}\b`),
-		"ИНН физлица":     regexp.MustCompile(`(^|\D)\d{12}($|\D)`),
 		"Кредитная карта": regexp.MustCompile(`\d{4}[\s\-]?\d{4}[\s\-]?\d{4}[\s\-]?\d{4}`),
 	}
 
@@ -498,12 +497,29 @@ func checkForPDNPatterns(input string) []string {
 		"Фото":                {"фото", "foto", "photo"},
 	}
 
-	for pdnType, re := range valuePatterns {
-		if re.MatchString(input) {
-			foundTypes = append(foundTypes, pdnType)
+	// Проверка ИНН физлица (12 цифр, не начинается с 000)
+	if matched, _ := regexp.MatchString(`(^|\D)\d{12}($|\D)`, input); matched {
+		if !strings.HasPrefix(strings.TrimLeft(input, "0123456789"), "000") {
+			foundTypes = appendIfNotExists(foundTypes, "ИНН физлица")
 		}
 	}
 
+	// Проверка номеров паспортов (исключаем начинающиеся с 000)
+	if matched, _ := regexp.MatchString(`\b\d{2}\s?\d{2}\s?\d{6}\b`, input); matched {
+		parts := regexp.MustCompile(`\s?`).Split(input, -1)
+		if len(parts) == 3 && !strings.HasPrefix(parts[0]+parts[1], "0000") {
+			foundTypes = appendIfNotExists(foundTypes, "Паспорт РФ")
+		}
+	}
+
+	// Остальные проверки по регулярным выражениям
+	for pdnType, re := range valuePatterns {
+		if re.MatchString(input) {
+			foundTypes = appendIfNotExists(foundTypes, pdnType)
+		}
+	}
+
+	// Проверка по ключевым словам в заголовке
 	for pdnType, keywords := range headerPatterns {
 		for _, keyword := range keywords {
 			if strings.Contains(input, keyword) {
